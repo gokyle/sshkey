@@ -1,0 +1,12 @@
+sshkey: a small package for loading OpenSSH RSA keys.
+
+The key may be loaded via file, HTTP(S), or as byte slices.
+
+Example:
+
+    pub, err := sshkey.LoadPublicKeyFile("/home/user/.ssh/id_rsa.pub", false)
+
+    priv, err := sshkey.LoadPrivateKeyFile("/home/user/.ssh/id_rsa")
+
+License:
+sshkey is released under an ISC license.
