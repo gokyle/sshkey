@@ -110,7 +110,6 @@ func LoadPrivateKey(raw []byte) (key interface{}, keytype int, err error) {
 				}
 			}
 		}
-		ioutil.WriteFile("raw.bin", raw, 0644)
 		switch block.Type {
 		case "RSA PRIVATE KEY":
 			keytype = KEY_RSA

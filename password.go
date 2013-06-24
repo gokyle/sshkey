@@ -54,7 +54,6 @@ func opensshKDF(iv []byte, password []byte) (key []byte, err error) {
 	hash.Write(password)
 	hash.Write(iv[:8])
 	key = hash.Sum(nil)
-	fmt.Printf("key: %x\n", key)
 	return
 }
 
@@ -87,6 +86,5 @@ func sshUnpad(padded []byte) (unpadded []byte) {
 	paddedLen := len(padded)
 	var padnum int = int(padded[paddedLen - 1])
 	stop := len(padded) - padnum
-	fmt.Println("key is", stop, "bytes with", padnum, "bytes of padding.")
 	return padded[:stop]
 }
