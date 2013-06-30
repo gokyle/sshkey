@@ -22,16 +22,16 @@ import (
 )
 
 var (
-	ErrInvalidPublicKey  = fmt.Errorf("sshkey: invalid public key")
-	ErrInvalidPrivateKey = fmt.Errorf("sshkey: invalid private key")
-	ErrUnsupportedPublicKey = fmt.Errorf("sshkey: unsupported public key type")
+	ErrInvalidPublicKey      = fmt.Errorf("sshkey: invalid public key")
+	ErrInvalidPrivateKey     = fmt.Errorf("sshkey: invalid private key")
+	ErrUnsupportedPublicKey  = fmt.Errorf("sshkey: unsupported public key type")
 	ErrUnsupportedPrivateKey = fmt.Errorf("sshkey: unsupported private key type")
 )
 
 // These constants are used as the keytype in functions that return a keytype.
 const (
 	KEY_UNSUPPORTED = -1
-	KEY_ECDSA = iota
+	KEY_ECDSA       = iota
 	KEY_RSA
 )
 
@@ -70,7 +70,7 @@ func LoadPublicKey(raw []byte) (key interface{}, keytype int, err error) {
 	if err != nil {
 		return
 	}
-	switch  {
+	switch {
 	case bytes.HasPrefix(raw, []byte("ssh-rsa")):
 		fmt.Println("load rsa key")
 		keytype = KEY_RSA
@@ -234,7 +234,7 @@ func parseECDSAPublicKey(raw []byte) (key *ecdsa.PublicKey, err error) {
 		return
 	}
 
-		fmt.Println("unmarshal ")
+	fmt.Println("unmarshal ")
 	key.X, key.Y = elliptic.Unmarshal(curve, public)
 	if key.X == nil {
 		fmt.Println("unmarshal failed")
@@ -242,6 +242,65 @@ func parseECDSAPublicKey(raw []byte) (key *ecdsa.PublicKey, err error) {
 		return
 	}
 	key.Curve = curve
-		fmt.Println("unmarshal ok")
+	fmt.Println("unmarshal ok")
 	return
+}
+
+func uint32ToBlob(n uint32) []byte {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.BigEndian, n)
+	if err != nil {
+		return nil
+	}
+	return buf.Bytes()
+}
+
+func curveName(curve elliptic.Curve) []byte {
+	switch curve {
+	case elliptic.P256():
+		return []byte("nistp256")
+	case elliptic.P384():
+		return []byte("nistp384")
+	case elliptic.P521():
+		return []byte("nistp521")
+	default:
+		return nil
+	}
+}
+
+func PublicToBlob(pub interface{}) ([]byte, error) {
+	buf := new(bytes.Buffer)
+
+	switch pub.(type) {
+	case *rsa.PublicKey:
+		rsapub := pub.(*rsa.PublicKey)
+		tag1 := uint32ToBlob(7) // 7 characters for 'ssh-rsa'
+		if tag1 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag1)
+		buf.Write([]byte("ssh-rsa"))
+
+		E := big.NewInt(int64(rsapub.E)).Bytes()
+		tag2 := uint32ToBlob(uint32(len(E)))
+		if tag2 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag2)
+		buf.Write(E)
+
+		N := rsapub.N.Bytes()
+		tag3 := uint32ToBlob(uint32(len(N) + 1))
+		if tag3 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag3)
+		buf.Write([]byte{0})
+		buf.Write(N)
+	case *ecdsa.PublicKey:
+	default:
+		return nil, ErrInvalidPublicKey
+	}
+
+	return buf.Bytes(), nil
 }

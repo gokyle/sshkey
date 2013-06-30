@@ -16,7 +16,7 @@ import (
 var PasswordPrompt func(prompt string) (password string, err error) = DefaultPasswordPrompt
 
 var (
-	ErrInvalidDEK = fmt.Errorf("sshkey: invalid DEK info")
+	ErrInvalidDEK      = fmt.Errorf("sshkey: invalid DEK info")
 	ErrUnableToDecrypt = fmt.Errorf("sshkey: unable to decrypt key")
 )
 
@@ -84,7 +84,7 @@ func aesCBCdecrypt(aeskey, iv, ct []byte) (key []byte, err error) {
 // seriously!?
 func sshUnpad(padded []byte) (unpadded []byte) {
 	paddedLen := len(padded)
-	var padnum int = int(padded[paddedLen - 1])
+	var padnum int = int(padded[paddedLen-1])
 	stop := len(padded) - padnum
 	return padded[:stop]
 }
