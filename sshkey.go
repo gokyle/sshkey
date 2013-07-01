@@ -72,11 +72,9 @@ func LoadPublicKey(raw []byte) (key interface{}, keytype int, err error) {
 	}
 	switch {
 	case bytes.HasPrefix(raw, []byte("ssh-rsa")):
-		fmt.Println("load rsa key")
 		keytype = KEY_RSA
 		key, err = parseRSAPublicKey(kb)
 	case bytes.HasPrefix(raw, []byte("ecdsa")):
-		fmt.Println("load ecdsa key")
 		keytype = KEY_ECDSA
 		key, err = parseECDSAPublicKey(kb)
 	default:
@@ -234,15 +232,12 @@ func parseECDSAPublicKey(raw []byte) (key *ecdsa.PublicKey, err error) {
 		return
 	}
 
-	fmt.Println("unmarshal ")
 	key.X, key.Y = elliptic.Unmarshal(curve, public)
 	if key.X == nil {
-		fmt.Println("unmarshal failed")
 		err = ErrInvalidPublicKey
 		return
 	}
 	key.Curve = curve
-	fmt.Println("unmarshal ok")
 	return
 }
 
@@ -298,6 +293,36 @@ func PublicToBlob(pub interface{}) ([]byte, error) {
 		buf.Write([]byte{0})
 		buf.Write(N)
 	case *ecdsa.PublicKey:
+		ecpub := pub.(*ecdsa.PublicKey)
+		cname := curveName(ecpub.Curve)
+		if cname == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		algo := []byte(fmt.Sprintf("ecdsa-sha2-%s", string(cname)))
+		tag1 := uint32ToBlob(uint32(len(algo)))
+		if tag1 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag1)
+		buf.Write(algo)
+
+		tag2 := uint32ToBlob(uint32(len(cname)))
+		if tag2 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag2)
+		buf.Write(cname)
+
+		pubkey := elliptic.Marshal(ecpub.Curve, ecpub.X, ecpub.Y)
+		if pubkey == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		tag3 := uint32ToBlob(uint32(len(pubkey)))
+		if tag3 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag3)
+		buf.Write(pubkey)
 	default:
 		return nil, ErrInvalidPublicKey
 	}
