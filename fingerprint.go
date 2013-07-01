@@ -14,8 +14,13 @@ var (
 )
 
 // Return the fingerprint of the key in a raw format.
-func Fingerprint(pub interface{}, hashalgo crypto.Hash) (fpr []byte, err error) {
+func Fingerprint(pub *SSHPublicKey, hashalgo crypto.Hash) (fpr []byte, err error) {
 	var h hash.Hash
+
+	// The default algorithm for OpenSSH appears to be MD5.
+	if hashalgo == 0 {
+		hashalgo = crypto.MD5
+	}
 
 	switch hashalgo {
 	case crypto.MD5:
@@ -28,7 +33,7 @@ func Fingerprint(pub interface{}, hashalgo crypto.Hash) (fpr []byte, err error) 
 		return nil, ErrInvalidDigest
 	}
 
-	blob, err := PublicToBlob(pub)
+	blob, err := publicToBlob(pub)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +42,8 @@ func Fingerprint(pub interface{}, hashalgo crypto.Hash) (fpr []byte, err error) 
 	return h.Sum(nil), nil
 }
 
-func FingerprintPretty(pub interface{}, hashalgo crypto.Hash) (fpr string, err error) {
+// Return a string containing a printable form of the key's fingerprint.
+func FingerprintPretty(pub *SSHPublicKey, hashalgo crypto.Hash) (fpr string, err error) {
 	fprBytes, err := Fingerprint(pub, hashalgo)
 	if err != nil {
 		return

@@ -7,8 +7,11 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/md5"
+	"crypto/rand"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -81,10 +84,81 @@ func aesCBCdecrypt(aeskey, iv, ct []byte) (key []byte, err error) {
 	return
 }
 
-// seriously!?
+// PKCS #5 padding scheme
 func sshUnpad(padded []byte) (unpadded []byte) {
 	paddedLen := len(padded)
 	var padnum int = int(padded[paddedLen-1])
 	stop := len(padded) - padnum
 	return padded[:stop]
+}
+
+func sshPad(unpadded []byte) (padded []byte) {
+	padLen := ((len(unpadded) + 15) / 16) * 16
+
+	padded = make([]byte, padLen)
+	padding := make([]byte, padLen-len(unpadded))
+	for i := 0; i < len(padding); i++ {
+		padding[i] = byte(len(padding))
+	}
+
+	copy(padded, unpadded)
+	copy(padded[len(unpadded):], padding)
+	return
+}
+
+func generateIV() (iv []byte, err error) {
+	iv = make([]byte, aes.BlockSize)
+	_, err = io.ReadFull(rand.Reader, iv)
+	return
+}
+
+func aesCBCencrypt(aeskey, key, iv []byte) (ct []byte, err error) {
+	c, err := aes.NewCipher(aeskey)
+	if err != nil {
+		return
+	}
+
+	cbc := cipher.NewCBCEncrypter(c, iv)
+	ct = sshPad(key)
+	cbc.CryptBlocks(ct, ct)
+	return
+}
+
+func encryptKey(key []byte, password string) (cryptkey, iv []byte, err error) {
+	iv, err = generateIV()
+	if err != nil {
+		return
+	}
+
+	aeskey, err := opensshKDF(iv, []byte(password))
+	if err != nil {
+		return
+	}
+
+	cryptkey, err = aesCBCencrypt(aeskey, key, iv)
+	return
+}
+
+func encrypt(key []byte, keytype int, password string) (out []byte, err error) {
+	cryptkey, iv, err := encryptKey(key, password)
+	if err != nil {
+		return
+	}
+
+	var block pem.Block
+	switch keytype {
+	case KEY_RSA:
+		block.Type = "RSA PRIVATE KEY"
+	case KEY_ECDSA:
+		block.Type = "EC PRIVATE KEY"
+	default:
+		err = ErrInvalidPrivateKey
+		return
+	}
+	block.Bytes = cryptkey
+	block.Headers = make(map[string]string)
+	block.Headers["Proc-Type"] = "4,ENCRYPTED"
+	block.Headers["DEK-Info"] = fmt.Sprintf("AES-128-CBC,%X", iv)
+	out = pem.EncodeToMemory(&block)
+	return
 }
