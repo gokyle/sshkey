@@ -1,21 +1,22 @@
-/*
-	sshkey is a package for loading OpenSSH keys from a file. Currently
-	supports RSA and ECDSA keys.
-*/
 package sshkey
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
 	"fmt"
+	"hash"
 	"io"
 	"io/ioutil"
 	"math/big"
@@ -25,19 +26,26 @@ import (
 )
 
 var (
-	ErrInvalidPublicKey      = fmt.Errorf("sshkey: invalid public key")
+	ErrInvalidDigest         = fmt.Errorf("sshkey: invalid digest algorithm")
+	ErrInvalidKeySize        = fmt.Errorf("sshkey: invalid private key size")
 	ErrInvalidPrivateKey     = fmt.Errorf("sshkey: invalid private key")
+	ErrInvalidPublicKey      = fmt.Errorf("sshkey: invalid public key")
 	ErrUnsupportedPublicKey  = fmt.Errorf("sshkey: unsupported public key type")
 	ErrUnsupportedPrivateKey = fmt.Errorf("sshkey: unsupported private key type")
-	ErrInvalidKeySize = fmt.Errorf("sshkey: invalid private key size")
 )
 
+// PRNG contains the random data source to be used in key generation. It
+// defaults to crypto/rand.Reader.
+var PRNG io.Reader = rand.Reader
+
+// Representation of an SSH public key in the library.
 type SSHPublicKey struct {
-	Type    int // Algorithm for the key
+	Type    int
 	Key     interface{}
 	Comment string
 }
 
+// Given a private key and comment, NewPublic will return a new SSHPublicKey.
 func NewPublic(priv interface{}, comment string) *SSHPublicKey {
 	pub := new(SSHPublicKey)
 	switch priv.(type) {
@@ -58,7 +66,7 @@ func NewPublic(priv interface{}, comment string) *SSHPublicKey {
 	return pub
 }
 
-// These constants are used as the keytype in functions that return a keytype.
+// These constants are used as the key type in the SSHPublicKey.
 const (
 	KEY_UNSUPPORTED = -1
 	KEY_ECDSA       = iota
@@ -89,12 +97,12 @@ func fetchKey(name string, local bool) (kb []byte, err error) {
 // local is false, the key will be fetched over HTTP.
 func LoadPublicKeyFile(name string, local bool) (key *SSHPublicKey, err error) {
 	kb64, err := fetchKey(name, local)
-	return LoadPublicKey(kb64)
+	return UnmarshalPublic(kb64)
 }
 
-// LoadPublicKey decodes a byte slice containing an OpenSSH RSA public key
-// into an RSA public key.
-func LoadPublicKey(raw []byte) (key *SSHPublicKey, err error) {
+// UnmarshalPublic decodes a byte slice containing an OpenSSH public key
+// into an public key. It supports RSA and ECDSA keys.
+func UnmarshalPublic(raw []byte) (key *SSHPublicKey, err error) {
 	kb64 := pubkeyRegexp.ReplaceAll(raw, []byte("$1"))
 	kb := make([]byte, base64.StdEncoding.DecodedLen(len(raw)))
 	_, err = base64.StdEncoding.Decode(kb, kb64)
@@ -122,16 +130,14 @@ func LoadPublicKey(raw []byte) (key *SSHPublicKey, err error) {
 	return
 }
 
-// Load an OpenSSH private key from a file. This is a convenience wrapper
-// around LoadPrivateKey, and can fetch the key from an HTTP(S) server,
-// as well..
+// Load an OpenSSH private key from a file.
 func LoadPrivateKeyFile(name string) (key interface{}, keytype int, err error) {
 	kb, err := fetchKey(name, true)
-	return LoadPrivateKey(kb)
+	return UnmarshalPrivate(kb)
 }
 
 // Load an OpenSSH private key from a byte slice.
-func LoadPrivateKey(raw []byte) (key interface{}, keytype int, err error) {
+func UnmarshalPrivate(raw []byte) (key interface{}, keytype int, err error) {
 	block, _ := pem.Decode(raw)
 	if block == nil {
 		err = ErrInvalidPrivateKey
@@ -368,6 +374,9 @@ func publicToBlob(pub *SSHPublicKey) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// Given a private key and a (possibly empty) password, returns a byte
+// slice containing a PEM-encoded private key in the appropriate
+// OpenSSH format.
 func MarshalPrivate(priv interface{}, password string) (out []byte, err error) {
 	var (
 		keytype int
@@ -449,6 +458,8 @@ func marshalECDSAKey(priv *ecdsa.PrivateKey) (out []byte, err error) {
 	return
 }
 
+// MarshalPublic returns a byte slice containing an OpenSSH public key built
+// from the SSHPublicKey.
 func MarshalPublic(pub *SSHPublicKey) (out []byte) {
 	blob, err := publicToBlob(pub)
 	if err != nil {
@@ -472,6 +483,7 @@ func MarshalPublic(pub *SSHPublicKey) (out []byte) {
 	return
 }
 
+// Return the bitsize of the underlying public key.
 func (key *SSHPublicKey) Size() int {
 	switch key.Type {
 	case KEY_RSA:
@@ -483,14 +495,17 @@ func (key *SSHPublicKey) Size() int {
 	}
 }
 
-func GenerateSSHKey(keytype, size int) (key interface{}, err error) {
+// Generates a compatible OpenSSH private key. The key is in the
+// raw Go key format. To convert this to a PEM encoded key, see
+// MarshalPrivate.
+func GenerateKey(keytype, size int) (key interface{}, err error) {
 	switch keytype {
 	case KEY_RSA:
 		if size < 2048 {
 			return nil, ErrInvalidKeySize
 		}
 		var rsakey *rsa.PrivateKey
-		rsakey, err = rsa.GenerateKey(rand.Reader, size)
+		rsakey, err = rsa.GenerateKey(PRNG, size)
 		if err != nil {
 			return
 		}
@@ -499,16 +514,59 @@ func GenerateSSHKey(keytype, size int) (key interface{}, err error) {
 		var eckey *ecdsa.PrivateKey
 		switch size {
 		case 256:
-			eckey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			eckey, err = ecdsa.GenerateKey(elliptic.P256(), PRNG)
 		case 384:
-			eckey, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+			eckey, err = ecdsa.GenerateKey(elliptic.P384(), PRNG)
 		case 521:
-			eckey, err = ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+			eckey, err = ecdsa.GenerateKey(elliptic.P521(), PRNG)
 		default:
 			return nil, ErrInvalidKeySize
 		}
 		key = eckey
 	}
 
+	return
+}
+
+// Return the fingerprint of the key in a raw format.
+func Fingerprint(pub *SSHPublicKey, hashalgo crypto.Hash) (fpr []byte, err error) {
+	var h hash.Hash
+
+	// The default algorithm for OpenSSH appears to be MD5.
+	if hashalgo == 0 {
+		hashalgo = crypto.MD5
+	}
+
+	switch hashalgo {
+	case crypto.MD5:
+		h = md5.New()
+	case crypto.SHA1:
+		h = sha1.New()
+	case crypto.SHA256:
+		h = sha256.New()
+	default:
+		return nil, ErrInvalidDigest
+	}
+
+	blob, err := publicToBlob(pub)
+	if err != nil {
+		return nil, err
+	}
+	h.Write(blob)
+
+	return h.Sum(nil), nil
+}
+
+// Return a string containing a printable form of the key's fingerprint.
+func FingerprintPretty(pub *SSHPublicKey, hashalgo crypto.Hash) (fpr string, err error) {
+	fprBytes, err := Fingerprint(pub, hashalgo)
+	if err != nil {
+		return
+	}
+
+	for _, v := range fprBytes {
+		fpr += fmt.Sprintf("%02x:", v)
+	}
+	fpr = fpr[:len(fpr)-1]
 	return
 }
