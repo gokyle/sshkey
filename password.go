@@ -1,6 +1,7 @@
 package sshkey
 
-// Functions for handling password protected keys.
+// This file contains utillity functions for decrypting password protecting keys
+// and password protecting keys.
 
 import (
 	"bufio"
@@ -16,6 +17,8 @@ import (
 	"strings"
 )
 
+// The PasswordPrompt function is the function that is called to prompt the user for
+// a password.
 var PasswordPrompt func(prompt string) (password string, err error) = DefaultPasswordPrompt
 
 var (
@@ -60,6 +63,8 @@ func opensshKDF(iv []byte, password []byte) (key []byte, err error) {
 	return
 }
 
+// DefaultPasswordPrompt is a simple (but echoing) password entry function
+// that takes a prompt and reads the password.
 func DefaultPasswordPrompt(prompt string) (password string, err error) {
 	fmt.Printf(prompt)
 	rd := bufio.NewReader(os.Stdin)
