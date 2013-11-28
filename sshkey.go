@@ -38,9 +38,12 @@ var (
 // defaults to crypto/rand.Reader.
 var PRNG io.Reader = rand.Reader
 
+// Representation of type of SSH Key
+type Type int
+
 // Representation of an SSH public key in the library.
 type SSHPublicKey struct {
-	Type    int
+	Type    Type
 	Key     interface{}
 	Comment string
 }
@@ -68,8 +71,8 @@ func NewPublic(priv interface{}, comment string) *SSHPublicKey {
 
 // These constants are used as the key type in the SSHPublicKey.
 const (
-	KEY_UNSUPPORTED = -1
-	KEY_ECDSA       = iota
+	KEY_UNSUPPORTED Type = iota - 1
+	KEY_ECDSA
 	KEY_RSA
 )
 
@@ -131,13 +134,13 @@ func UnmarshalPublic(raw []byte) (key *SSHPublicKey, err error) {
 }
 
 // Load an OpenSSH private key from a file.
-func LoadPrivateKeyFile(name string) (key interface{}, keytype int, err error) {
+func LoadPrivateKeyFile(name string) (key interface{}, keytype Type, err error) {
 	kb, err := fetchKey(name, true)
 	return UnmarshalPrivate(kb)
 }
 
 // Load an OpenSSH private key from a byte slice.
-func UnmarshalPrivate(raw []byte) (key interface{}, keytype int, err error) {
+func UnmarshalPrivate(raw []byte) (key interface{}, keytype Type, err error) {
 	block, _ := pem.Decode(raw)
 	if block == nil {
 		err = ErrInvalidPrivateKey
@@ -379,7 +382,7 @@ func publicToBlob(pub *SSHPublicKey) ([]byte, error) {
 // OpenSSH format.
 func MarshalPrivate(priv interface{}, password string) (out []byte, err error) {
 	var (
-		keytype int
+		keytype Type
 		der     []byte
 		btype   string
 	)
@@ -498,7 +501,7 @@ func (key *SSHPublicKey) Size() int {
 // Generates a compatible OpenSSH private key. The key is in the
 // raw Go key format. To convert this to a PEM encoded key, see
 // MarshalPrivate.
-func GenerateKey(keytype, size int) (key interface{}, err error) {
+func GenerateKey(keytype Type, size int) (key interface{}, err error) {
 	switch keytype {
 	case KEY_RSA:
 		if size < 2048 {

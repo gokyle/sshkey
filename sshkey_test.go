@@ -10,7 +10,7 @@ func StubPasswordPrompt(prompt string) (password string, err error) {
 type pubTest struct {
 	FileName    string
 	Fingerprint string
-	Type        int
+	Type        Type
 	Size        int
 }
 
