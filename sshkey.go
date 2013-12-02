@@ -3,6 +3,7 @@ package sshkey
 import (
 	"bytes"
 	"crypto"
+	"crypto/dsa"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/md5"
@@ -38,9 +39,12 @@ var (
 // defaults to crypto/rand.Reader.
 var PRNG io.Reader = rand.Reader
 
+// Representation of type of SSH Key
+type Type int
+
 // Representation of an SSH public key in the library.
 type SSHPublicKey struct {
-	Type    int
+	Type    Type
 	Key     interface{}
 	Comment string
 }
@@ -59,6 +63,11 @@ func NewPublic(priv interface{}, comment string) *SSHPublicKey {
 		pub.Type = KEY_ECDSA
 		pub.Key = ecpub
 		pub.Comment = comment
+	case *dsa.PrivateKey:
+		dsapub := &priv.(*dsa.PrivateKey).PublicKey
+		pub.Type = KEY_DSA
+		pub.Key = dsapub
+		pub.Comment = comment
 	default:
 		return nil
 	}
@@ -68,9 +77,10 @@ func NewPublic(priv interface{}, comment string) *SSHPublicKey {
 
 // These constants are used as the key type in the SSHPublicKey.
 const (
-	KEY_UNSUPPORTED = -1
-	KEY_ECDSA       = iota
+	KEY_UNSUPPORTED Type = iota - 1
+	KEY_ECDSA
 	KEY_RSA
+	KEY_DSA
 )
 
 var pubkeyRegexp = regexp.MustCompile("(?m)^[a-z0-9-]+ (\\S+).*$")
@@ -105,10 +115,11 @@ func LoadPublicKeyFile(name string, local bool) (key *SSHPublicKey, err error) {
 func UnmarshalPublic(raw []byte) (key *SSHPublicKey, err error) {
 	kb64 := pubkeyRegexp.ReplaceAll(raw, []byte("$1"))
 	kb := make([]byte, base64.StdEncoding.DecodedLen(len(raw)))
-	_, err = base64.StdEncoding.Decode(kb, kb64)
+	i, err := base64.StdEncoding.Decode(kb, kb64)
 	if err != nil {
 		return
 	}
+	kb = kb[:i]
 
 	key = new(SSHPublicKey)
 	if commentRegexp.Match(raw) {
@@ -123,6 +134,9 @@ func UnmarshalPublic(raw []byte) (key *SSHPublicKey, err error) {
 	case bytes.HasPrefix(raw, []byte("ecdsa")):
 		key.Type = KEY_ECDSA
 		key.Key, err = parseECDSAPublicKey(kb)
+	case bytes.HasPrefix(raw, []byte("ssh-dss")):
+		key.Type = KEY_DSA
+		key.Key, err = parseDSAPublicKey(kb)
 	default:
 		key.Type = KEY_UNSUPPORTED
 		err = ErrUnsupportedPublicKey
@@ -131,13 +145,13 @@ func UnmarshalPublic(raw []byte) (key *SSHPublicKey, err error) {
 }
 
 // Load an OpenSSH private key from a file.
-func LoadPrivateKeyFile(name string) (key interface{}, keytype int, err error) {
+func LoadPrivateKeyFile(name string) (key interface{}, keytype Type, err error) {
 	kb, err := fetchKey(name, true)
 	return UnmarshalPrivate(kb)
 }
 
 // Load an OpenSSH private key from a byte slice.
-func UnmarshalPrivate(raw []byte) (key interface{}, keytype int, err error) {
+func UnmarshalPrivate(raw []byte) (key interface{}, keytype Type, err error) {
 	block, _ := pem.Decode(raw)
 	if block == nil {
 		err = ErrInvalidPrivateKey
@@ -167,6 +181,44 @@ func UnmarshalPrivate(raw []byte) (key interface{}, keytype int, err error) {
 			key, err = x509.ParseECPrivateKey(raw)
 			if err != nil {
 				err = ErrInvalidPrivateKey
+			}
+		case "DSA PRIVATE KEY":
+			keytype = KEY_DSA
+			k := struct {
+				Version int
+				P       *big.Int
+				Q       *big.Int
+				G       *big.Int
+				Priv    *big.Int
+				Pub     *big.Int
+			}{}
+
+			var rest []byte
+			rest, err = asn1.Unmarshal(raw, &k)
+
+			if err != nil {
+				err = ErrInvalidPrivateKey
+				return
+			} else if len(rest) > 0 {
+				err = ErrInvalidPrivateKey
+				return
+			}
+
+			key = &dsa.PrivateKey{
+				PublicKey: dsa.PublicKey{
+					Parameters: dsa.Parameters{
+						P: k.P,
+						Q: k.Q,
+						G: k.G,
+					},
+					Y: k.Priv,
+				},
+				X: k.Pub,
+			}
+
+			if key.(*dsa.PrivateKey).PublicKey.P.BitLen() < 1023 {
+				fmt.Printf("[-] warning: SSH key is a weak key (consider ")
+				fmt.Printf("upgrading to a 1023+ bit key.")
 			}
 		default:
 			err = ErrUnsupportedPrivateKey
@@ -285,6 +337,66 @@ func parseECDSAPublicKey(raw []byte) (key *ecdsa.PublicKey, err error) {
 	return
 }
 
+func parseDSAPublicKey(raw []byte) (key *dsa.PublicKey, err error) {
+	buf := bytes.NewBuffer(raw)
+	var algorithm []byte
+	var length int32
+
+	err = binary.Read(buf, binary.BigEndian, &length)
+	if err != nil {
+		return
+	}
+
+	algorithm = make([]byte, length)
+	_, err = io.ReadFull(buf, algorithm)
+	if err != nil {
+		return
+	}
+
+	if string(algorithm) != "ssh-dss" {
+		err = ErrInvalidPublicKey
+		return
+	}
+
+	parseInt := func(in io.Reader) (*big.Int, error) {
+		var length int32
+		if err := binary.Read(in, binary.BigEndian, &length); err != nil {
+			return nil, err
+		}
+		val := make([]byte, length)
+		if _, err := io.ReadFull(in, val); err != nil {
+			return nil, err
+		}
+
+		return new(big.Int).SetBytes(val), nil
+	}
+
+	key = new(dsa.PublicKey)
+
+	key.P, err = parseInt(buf)
+	if err != nil {
+		return
+	}
+
+	key.Q, err = parseInt(buf)
+	if err != nil {
+		return
+	}
+
+	key.G, err = parseInt(buf)
+	if err != nil {
+		return
+	}
+
+	key.Y, err = parseInt(buf)
+	if err != nil {
+		return
+	}
+
+	return
+
+}
+
 func uint32ToBlob(n uint32) []byte {
 	buf := new(bytes.Buffer)
 	err := binary.Write(buf, binary.BigEndian, n)
@@ -367,6 +479,49 @@ func publicToBlob(pub *SSHPublicKey) ([]byte, error) {
 		}
 		buf.Write(tag3)
 		buf.Write(pubkey)
+	case *dsa.PublicKey:
+		dsapub := pub.Key.(*dsa.PublicKey)
+		tag1 := uint32ToBlob(7) // 7 characters for 'ssh-rsa'
+		if tag1 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag1)
+		buf.Write([]byte("ssh-dss"))
+
+		P := dsapub.P.Bytes()
+		tag2 := uint32ToBlob(uint32(len(P) + 1))
+		if tag2 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag2)
+		buf.Write([]byte{0})
+		buf.Write(P)
+
+		Q := dsapub.Q.Bytes()
+		tag3 := uint32ToBlob(uint32(len(Q) + 1))
+		if tag3 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag3)
+		buf.Write([]byte{0})
+		buf.Write(Q)
+
+		G := dsapub.G.Bytes()
+		tag4 := uint32ToBlob(uint32(len(G)))
+		if tag4 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag4)
+		buf.Write(G)
+
+		Y := dsapub.Y.Bytes()
+		tag5 := uint32ToBlob(uint32(len(Y)))
+		if tag5 == nil {
+			return nil, ErrInvalidPublicKey
+		}
+		buf.Write(tag5)
+		buf.Write(Y)
+
 	default:
 		return nil, ErrInvalidPublicKey
 	}
@@ -379,7 +534,7 @@ func publicToBlob(pub *SSHPublicKey) ([]byte, error) {
 // OpenSSH format.
 func MarshalPrivate(priv interface{}, password string) (out []byte, err error) {
 	var (
-		keytype int
+		keytype Type
 		der     []byte
 		btype   string
 	)
@@ -397,6 +552,30 @@ func MarshalPrivate(priv interface{}, password string) (out []byte, err error) {
 		keytype = KEY_ECDSA
 		der, err = marshalECDSAKey(priv.(*ecdsa.PrivateKey))
 		btype = "EC PRIVATE KEY"
+	case *dsa.PrivateKey:
+		keytype = KEY_DSA
+
+		dsakey := priv.(*dsa.PrivateKey)
+		k := struct {
+			Version int
+			P       *big.Int
+			Q       *big.Int
+			G       *big.Int
+			Priv    *big.Int
+			Pub     *big.Int
+		}{
+			Version: 1,
+			P:       dsakey.PublicKey.P,
+			Q:       dsakey.PublicKey.Q,
+			G:       dsakey.PublicKey.G,
+			Priv:    dsakey.PublicKey.Y,
+			Pub:     dsakey.X,
+		}
+		der, err = asn1.Marshal(k)
+		if err != nil {
+			return
+		}
+		btype = "DSA PRIVATE KEY"
 	default:
 		err = ErrInvalidPrivateKey
 		return
@@ -490,6 +669,8 @@ func (key *SSHPublicKey) Size() int {
 		return key.Key.(*rsa.PublicKey).N.BitLen()
 	case KEY_ECDSA:
 		return key.Key.(*ecdsa.PublicKey).Curve.Params().BitSize
+	case KEY_DSA:
+		return key.Key.(*dsa.PublicKey).P.BitLen()
 	default:
 		return 0
 	}
@@ -498,7 +679,7 @@ func (key *SSHPublicKey) Size() int {
 // Generates a compatible OpenSSH private key. The key is in the
 // raw Go key format. To convert this to a PEM encoded key, see
 // MarshalPrivate.
-func GenerateKey(keytype, size int) (key interface{}, err error) {
+func GenerateKey(keytype Type, size int) (key interface{}, err error) {
 	switch keytype {
 	case KEY_RSA:
 		if size < 2048 {
@@ -523,6 +704,36 @@ func GenerateKey(keytype, size int) (key interface{}, err error) {
 			return nil, ErrInvalidKeySize
 		}
 		key = eckey
+	case KEY_DSA:
+		var sizes dsa.ParameterSizes
+		switch size {
+		case 1024:
+			sizes = dsa.L1024N160
+		case 2048:
+			sizes = dsa.L2048N256
+		case 3072:
+			sizes = dsa.L3072N256
+		default:
+			err = ErrInvalidKeySize
+			return
+		}
+
+		params := dsa.Parameters{}
+		err = dsa.GenerateParameters(&params, rand.Reader, sizes)
+		if err != nil {
+			return
+		}
+
+		dsakey := &dsa.PrivateKey{
+			PublicKey: dsa.PublicKey{
+				Parameters: params,
+			},
+		}
+		err = dsa.GenerateKey(dsakey, rand.Reader)
+		if err != nil {
+			return
+		}
+		key = dsakey
 	}
 
 	return
