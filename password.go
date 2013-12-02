@@ -156,6 +156,8 @@ func encrypt(key []byte, keytype Type, password string) (out []byte, err error) 
 		block.Type = "RSA PRIVATE KEY"
 	case KEY_ECDSA:
 		block.Type = "EC PRIVATE KEY"
+	case KEY_DSA:
+		block.Type = "DSA PRIVATE KEY"
 	default:
 		err = ErrInvalidPrivateKey
 		return

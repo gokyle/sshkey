@@ -1,7 +1,9 @@
 package sshkey
 
-import "fmt"
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func StubPasswordPrompt(prompt string) (password string, err error) {
 	return "foo bar", nil
@@ -39,11 +41,29 @@ var pubTests = []pubTest{
 		Type:        KEY_ECDSA,
 		Size:        256,
 	},
+	pubTest{
+		FileName:    "testdata/test_dsa.pub",
+		Fingerprint: "a0:21:8c:1c:f4:4f:45:b4:1c:2a:a9:47:4b:7f:ba:f0",
+		Type:        KEY_DSA,
+		Size:        1024,
+	},
+	pubTest{
+		FileName:    "testdata/test2_dsa.pub",
+		Fingerprint: "04:65:87:9f:ae:6d:d6:56:6d:b3:a9:e6:4f:d7:e9:25",
+		Type:        KEY_DSA,
+		Size:        1024,
+	},
 }
 
 var fingerprintList map[string]string
-var privList = []string{"testdata/test_rsa", "testdata/test2_rsa",
-	"testdata/test_ecdsa", "testdata/test2_ecdsa"}
+var privList = []string{
+	"testdata/test_rsa",
+	"testdata/test2_rsa",
+	"testdata/test_ecdsa",
+	"testdata/test2_ecdsa",
+	"testdata/test_dsa",
+	"testdata/test2_dsa",
+}
 
 func init() {
 	PasswordPrompt = StubPasswordPrompt
